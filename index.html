@@ -25,6 +25,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .item{border-top:1px solid var(--bd);padding:10px 0;display:grid;gap:6px}
 .item:first-child{border-top:0}
 .txt{white-space:pre-wrap;word-break:break-word;background:var(--bg);padding:8px;border-radius:8px;max-height:200px;overflow:auto}
+progress{width:100%;height:14px}
 img.pv{max-width:100%;border-radius:8px}
 </style>
 </head>
@@ -60,7 +61,39 @@ img.pv{max-width:100%;border-radius:8px}
     <b>Transfers</b>
     <div id="list"><p class="mut">Nothing yet.</p></div>
   </section>
+  <section class="card" id="shareCard">
+    <b>🔗 Share a file by link</b>
+    <p class="mut">Pick a file (up to 20 GB) and get a link anyone can open to download it. The file stays on your device and streams straight to them, so <b>keep this tab open</b> until they finish.</p>
+    <label class="btn" style="width:fit-content">Choose file<input id="shFile" type="file" hidden></label>
+    <div id="shOut" style="display:none;margin-top:12px">
+      <div class="mut" id="shInfo"></div>
+      <div class="row" style="margin-top:8px">
+        <div id="shQr" style="background:#fff;padding:8px;border-radius:10px"></div>
+        <div style="flex:1;min-width:200px">
+          <input type="text" id="shLink" readonly onclick="this.select()">
+          <button class="sec" id="shCopy" style="margin-top:8px">Copy link</button>
+        </div>
+      </div>
+      <div id="shConns" style="margin-top:10px;display:grid;gap:4px"></div>
+    </div>
+  </section>
 </main>
+
+<main id="dlMain" style="display:none">
+  <h1>⬇ File download</h1>
+  <section class="card">
+    <div><span class="dot" id="dlDot"></span><b id="dlState">Connecting to sender…</b></div>
+    <div id="dlBox" style="display:none;margin-top:10px;display:none">
+      <div id="dlName" style="font-weight:600;word-break:break-all"></div>
+      <div class="mut" id="dlSize"></div>
+      <button id="dlBtn" style="margin-top:10px">Download</button>
+      <progress id="dlProg" value="0" max="1" style="margin-top:10px;display:none"></progress>
+      <div class="mut" id="dlNote" style="margin-top:6px"></div>
+      <a id="dlLink" class="btn" style="display:none;margin-top:10px">Save file</a>
+    </div>
+  </section>
+</main>
+
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
@@ -114,7 +147,7 @@ function setup(c) {
   c.on('error', e => setState('Connection error: ' + e.type, false));
 }
 
-const peer = isGuest ? new Peer() : new Peer('tx-' + Math.random().toString(36).slice(2, 10));
+const peer = location.search.includes('share=') ? { on() {} } : (isGuest ? new Peer() : new Peer('tx-' + Math.random().toString(36).slice(2, 10)));
 peer.on('error', e => setState('Error: ' + e.type + (e.type === 'peer-unavailable' ? ' (is the computer page still open?)' : ''), false));
 
 peer.on('open', id => {
@@ -148,6 +181,107 @@ $('file').onchange = async e => {
   }
   e.target.value = '';
 };
+</script>
+<script>
+(function () {
+  const G = id => document.getElementById(id);
+  const fmt = n => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB';
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const CH = 64 * 1024, MAX = 20 * 1024 ** 3;
+  const shareId = new URLSearchParams(location.search).get('share');
+
+  if (shareId) {
+    /* ---------- DOWNLOAD MODE ---------- */
+    document.querySelector('main').style.display = 'none';
+    G('dlMain').style.display = 'grid';
+    let meta = null, writer = null, parts = [], got = 0, chain = Promise.resolve(), c = null, done = false;
+    const state = (t, on) => { G('dlState').textContent = t; G('dlDot').className = 'dot' + (on ? ' on' : ''); };
+    const p = new Peer();
+    p.on('error', e => state(e.type === 'peer-unavailable' ? 'Sender is offline. Ask them to keep their page open, then reload.' : 'Error: ' + e.type, false));
+    p.on('open', () => {
+      c = p.connect(shareId, { reliable: true });
+      c.on('data', onData);
+      c.on('close', () => { if (!done && meta) state('Connection lost — reload to try again', false); });
+    });
+    async function finish() {
+      done = true; await chain;
+      if (writer) { await writer.close(); }
+      else {
+        const url = URL.createObjectURL(new Blob(parts, { type: meta.mime || 'application/octet-stream' })); parts = [];
+        const a = G('dlLink'); a.href = url; a.download = meta.name; a.textContent = '⬇ Save ' + meta.name; a.style.display = 'inline-block'; a.click();
+      }
+      state('✓ Download complete', true);
+    }
+    function onData(d) {
+      if (d && d.t === 'meta') {
+        meta = d; G('dlBox').style.display = 'block'; G('dlName').textContent = d.name; G('dlSize').textContent = fmt(d.size);
+        state('Ready', true);
+        if (!window.showSaveFilePicker && d.size > 1.5e9) G('dlNote').textContent = 'Large file: use Chrome or Edge on a computer. This browser has to hold the whole file in memory and may fail.';
+      } else if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
+        const u8 = d instanceof ArrayBuffer ? new Uint8Array(d) : d;
+        got += u8.byteLength; G('dlProg').value = got / meta.size;
+        state('Downloading… ' + Math.floor(got / meta.size * 100) + '%  (' + fmt(got) + ')', true);
+        if (writer) chain = chain.then(() => writer.write(u8)); else parts.push(u8);
+        if (got >= meta.size && !done) finish();
+      }
+    }
+    G('dlBtn').onclick = async () => {
+      G('dlBtn').disabled = true;
+      if (window.showSaveFilePicker) {
+        try { writer = await (await showSaveFilePicker({ suggestedName: meta.name })).createWritable(); }
+        catch (e) { if (e.name === 'AbortError') { G('dlBtn').disabled = false; return; } writer = null; }
+      }
+      G('dlProg').style.display = 'block';
+      c.send({ t: 'start' });
+    };
+    return;
+  }
+
+  /* ---------- SHARE (UPLOAD) MODE ---------- */
+  let sp = null, file = null;
+  window.addEventListener('beforeunload', e => { if (sp && G('shConns').children.length) { e.preventDefault(); e.returnValue = ''; } });
+
+  G('shFile').onchange = async e => {
+    file = e.target.files[0]; if (!file) return;
+    if (file.size > MAX) { alert('Max file size is 20 GB.'); e.target.value = ''; return; }
+    G('shOut').style.display = 'block'; G('shConns').innerHTML = ''; G('shQr').innerHTML = '';
+    G('shInfo').textContent = 'Preparing link…'; G('shLink').value = '';
+    if (sp) sp.destroy();
+    sp = new Peer('sh-' + Math.random().toString(36).slice(2, 12));
+    sp.on('error', err => G('shInfo').textContent = 'Error: ' + err.type);
+    sp.on('open', id => {
+      const link = location.origin + location.pathname + '?share=' + id;
+      G('shLink').value = link;
+      G('shInfo').textContent = file.name + ' · ' + fmt(file.size) + ' — link is live while this tab stays open';
+      new QRCode(G('shQr'), { text: link, width: 120, height: 120 });
+    });
+    sp.on('connection', serve);
+    try { await navigator.wakeLock.request('screen'); } catch {}
+  };
+  G('shCopy').onclick = async () => { try { await navigator.clipboard.writeText(G('shLink').value); G('shCopy').textContent = 'Copied'; } catch { G('shLink').select(); } };
+
+  function serve(c) {
+    const row = document.createElement('div'); row.className = 'mut'; row.textContent = '👤 Downloader connected';
+    G('shConns').prepend(row);
+    const f = file; let started = false;
+    c.on('open', () => c.send({ t: 'meta', name: f.name, size: f.size, mime: f.type }));
+    c.on('close', () => { if (!row.textContent.startsWith('✓')) row.textContent = '👤 Downloader left'; });
+    c.on('data', async d => {
+      if (!d || d.t !== 'start' || started) return;
+      started = true; let sent = 0, last = 0;
+      try {
+        for (let off = 0; off < f.size; off += CH) {
+          while (c.open && (c.dataChannel.bufferedAmount > 4e6 || c.bufferSize > 40)) await sleep(15);
+          if (!c.open) return;
+          const buf = await f.slice(off, Math.min(off + CH, f.size)).arrayBuffer();
+          c.send(buf); sent += buf.byteLength;
+          if (sent - last > 2e6) { last = sent; row.textContent = '👤 Sending… ' + Math.floor(sent / f.size * 100) + '%'; }
+        }
+        row.textContent = '✓ Finished sending to a downloader';
+      } catch (err) { row.textContent = 'Failed: ' + err.message; }
+    });
+  }
+})();
 </script>
 </body>
 </html>
