@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phone ⇄ Computer Transfer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#16181d;--mut:#6b7280;--ac:#2f6bff;--bd:#e3e6ec;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1d2026;--tx:#eceef2;--mut:#98a0ae;--ac:#6c95ff;--bd:#2c313a}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1d2026;--tx:#eceef2;--mut:#98a0ae;--ac:#6c95ff;--bd:#2c313a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px;display:grid;gap:14px}
+h1{font-size:1.3rem;margin:4px 0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+#qr{background:#fff;padding:10px;border-radius:10px;width:fit-content}
+input[type=text],textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);font:inherit}
+textarea{min-height:90px;resize:vertical}
+button,.btn{background:var(--ac);color:#fff;border:0;border-radius:10px;padding:10px 14px;font:inherit;cursor:pointer;text-decoration:none}
+button.sec{background:transparent;color:var(--ac);border:1px solid var(--bd)}
+.mut{color:var(--mut);font-size:.9rem}
+.item{border-top:1px solid var(--bd);padding:10px 0;display:grid;gap:6px}
+.item:first-child{border-top:0}
+.txt{white-space:pre-wrap;word-break:break-word;background:var(--bg);padding:8px;border-radius:8px;max-height:200px;overflow:auto}
+.tag{font-size:.75rem;color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+  <h1>📲 Phone ⇄ 💻 Computer</h1>
+
+  <section class="card" id="qrcard">
+    <b>1. Scan on your phone</b>
+    <p class="mut">Open this page on the other device while signed in to the same Claude account. Paste the artifact's link below if the QR looks wrong.</p>
+    <div class="row">
+      <div id="qr"></div>
+      <div style="flex:1;min-width:200px">
+        <input type="text" id="url" aria-label="Page link">
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <b>2. Send something</b>
+    <textarea id="msg" placeholder="Type or paste text, links, notes…"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="sendTxt">Send text</button>
+      <label class="btn sec" style="border:1px solid var(--bd);background:transparent;color:var(--ac)">Send file<input id="file" type="file" hidden></label>
+      <span class="mut" id="status"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between"><b>3. Received</b><button class="sec" id="clear">Clear all</button></div>
+    <div id="list"><p class="mut">Nothing yet.</p></div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const status = t => { $('status').textContent = t; };
+const device = /Mobi|Android|iPhone/i.test(navigator.userAgent) ? '📱 Phone' : '💻 Computer';
+
+// QR code
+$('url').value = location.href;
+let qr;
+function drawQR() {
+  $('qr').innerHTML = '';
+  try { qr = new QRCode($('qr'), { text: $('url').value || location.href, width: 160, height: 160 }); }
+  catch (e) { $('qr').textContent = 'QR unavailable'; }
+}
+$('url').addEventListener('change', drawQR);
+drawQR();
+if (device.includes('Phone')) $('qrcard').style.display = 'none';
+
+// Shared storage (private to your account)
+let col = null, assets = null;
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
+function render(docs) {
+  const items = docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.ts - a.ts);
+  if (!items.length) { $('list').innerHTML = '<p class="mut">Nothing yet.</p>'; return; }
+  $('list').innerHTML = '';
+  for (const it of items) {
+    const el = document.createElement('div'); el.className = 'item';
+    const head = document.createElement('div'); head.className = 'tag';
+    head.textContent = `${it.from} · ${new Date(it.ts).toLocaleString()}`;
+    el.appendChild(head);
+    if (it.kind === 'text') {
+      const t = document.createElement('div'); t.className = 'txt'; t.textContent = it.text; el.appendChild(t);
+      const r = document.createElement('div'); r.className = 'row';
+      const b = document.createElement('button'); b.className = 'sec'; b.textContent = 'Copy';
+      b.onclick = async () => { try { await navigator.clipboard.writeText(it.text); b.textContent = 'Copied'; } catch { b.textContent = 'Copy failed'; } };
+      r.appendChild(b); el.appendChild(r);
+    } else {
+      const a = document.createElement('a'); a.className = 'btn'; a.style.width = 'fit-content';
+      a.textContent = `⬇ ${it.name} (${Math.round(it.size/1024)} KB)`;
+      a.href = it.url || it.data; a.download = it.name; a.target = '_blank'; a.rel = 'noopener';
+      el.appendChild(a);
+      if ((it.type || '').startsWith('image/')) {
+        const img = document.createElement('img'); img.src = it.url || it.data; img.style.maxWidth = '100%'; img.style.borderRadius = '8px'; el.appendChild(img);
+      }
+    }
+    const del = document.createElement('button'); del.className = 'sec'; del.style.width = 'fit-content'; del.textContent = 'Delete';
+    del.onclick = () => col.doc(it.id).delete().catch(e => status('Delete failed'));
+    el.appendChild(del);
+    $('list').appendChild(el);
+  }
+}
+
+async function put(obj) {
+  if (!col) { status('Sign in to the same Claude account to transfer.'); return; }
+  try { await col.doc('t' + Date.now()).set({ ...obj, from: device, ts: Date.now() }); status('Sent ✓'); }
+  catch (e) { status('Send failed: ' + (e.code || e.message)); }
+}
+
+$('sendTxt').onclick = async () => {
+  const text = $('msg').value.trim(); if (!text) return;
+  await put({ kind: 'text', text }); $('msg').value = '';
+};
+
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  status('Sending…');
+  const base = { kind: 'file', name: f.name, size: f.size, type: f.type };
+  if (f.size <= 150 * 1024) {
+    const data = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
+    await put({ ...base, data });
+  } else if (assets) {
+    try { const up = await assets.upload(f); await put({ ...base, url: up.url }); }
+    catch (err) { status('Upload failed: ' + (err.code || err.message)); }
+  } else status('Files over 150 KB need the page owner to be signed in (asset storage).');
+  e.target.value = '';
+};
+
+$('clear').onclick = async () => {
+  if (!col || !confirm('Delete everything received?')) return;
+  const snap = await col.get(); await Promise.all(snap.docs.map(d => col.doc(d.id).delete()));
+};
+
+// Connect
+(async () => {
+  try {
+    const [db, user] = await Promise.all([claude.use('db'), claude.use('user')]);
+    assets = await claude.use('assets');
+    if (!db || !user) { status('Open this page from claude.ai while signed in.'); return; }
+    const id = await user.id();
+    col = db.collection('data/users/' + id);
+    col.onSnapshot(s => render(s.docs), e => status('Sync error: ' + e.code));
+  } catch (e) { status('Could not connect.'); }
+})();
+</script>
+</body>
+</html>
